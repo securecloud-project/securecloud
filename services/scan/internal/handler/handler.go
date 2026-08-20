@@ -4,16 +4,19 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	"securecloud/scan/internal/checks"
 	"securecloud/scan/internal/store"
 )
+
+const maxRequestBody = 4096
 
 type Handler struct {
 	store  *store.Store
@@ -56,18 +59,23 @@ type createScanRequest struct {
 
 func (h *Handler) createScan(w http.ResponseWriter, r *http.Request) {
 	var request createScanRequest
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&request); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON request")
 		return
 	}
-	request.Target = strings.TrimSpace(request.Target)
-	if request.Target == "" {
-		writeError(w, http.StatusBadRequest, "target is required")
+	if err := ensureJSONEOF(decoder); err != nil {
+		writeError(w, http.StatusBadRequest, "request must contain one JSON object")
 		return
 	}
-	scan, err := h.store.CreateScan(r.Context(), request.Target)
+	canonicalTarget, err := checks.NormalizeTarget(request.Target)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	scan, err := h.store.CreateScan(r.Context(), canonicalTarget)
 	if err != nil {
 		h.logger.Error("failed to create scan", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to create scan")
@@ -75,6 +83,18 @@ func (h *Handler) createScan(w http.ResponseWriter, r *http.Request) {
 	}
 	h.logger.Info("scan created", "scan_id", scan.ID, "target", scan.Target)
 	writeJSON(w, http.StatusAccepted, scan)
+}
+
+func ensureJSONEOF(decoder *json.Decoder) error {
+	var extra any
+	err := decoder.Decode(&extra)
+	if errors.Is(err, io.EOF) {
+		return nil
+	}
+	if err == nil {
+		return errors.New("multiple JSON values")
+	}
+	return err
 }
 
 func (h *Handler) getScan(w http.ResponseWriter, r *http.Request) {

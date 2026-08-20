@@ -85,7 +85,15 @@ func TestScanLifecycle(t *testing.T) {
 
 func TestCreateScanRejectsInvalidRequests(t *testing.T) {
 	router := newTestRouter(t)
-	for _, body := range []string{`{"target":""}`, `{"target":"   "}`, `hello`, `{"target":"example.com","extra":true}`} {
+	for _, body := range []string{
+		`{"target":""}`,
+		`{"target":"   "}`,
+		`hello`,
+		`{"target":"example.com","extra":true}`,
+		`{"target":"https://example.com"}`,
+		`{"target":"127.0.0.1"}`,
+		`{"target":"example.com"} {"target":"other.example"}`,
+	} {
 		response := performRequest(router, http.MethodPost, "/scan", body)
 		if response.Code != http.StatusBadRequest {
 			t.Errorf("POST /scan body %q status = %d, want 400", body, response.Code)
