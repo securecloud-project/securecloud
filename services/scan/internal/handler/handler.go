@@ -19,12 +19,17 @@ import (
 const maxRequestBody = 4096
 
 type Handler struct {
-	store  *store.Store
-	logger *slog.Logger
+	store     *store.Store
+	logger    *slog.Logger
+	submitter interface{ Enqueue(string) bool }
 }
 
-func New(scanStore *store.Store, logger *slog.Logger) *Handler {
-	return &Handler{store: scanStore, logger: logger}
+func New(scanStore *store.Store, logger *slog.Logger, submitter ...interface{ Enqueue(string) bool }) *Handler {
+	handler := &Handler{store: scanStore, logger: logger}
+	if len(submitter) > 0 {
+		handler.submitter = submitter[0]
+	}
+	return handler
 }
 
 func (h *Handler) Router() http.Handler {
@@ -79,6 +84,11 @@ func (h *Handler) createScan(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		h.logger.Error("failed to create scan", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to create scan")
+		return
+	}
+	if h.submitter != nil && !h.submitter.Enqueue(scan.ID) {
+		_ = h.store.FailScan(r.Context(), scan.ID, "scan queue is full")
+		writeError(w, http.StatusServiceUnavailable, "scan queue is full; retry later")
 		return
 	}
 	h.logger.Info("scan created", "scan_id", scan.ID, "target", scan.Target)

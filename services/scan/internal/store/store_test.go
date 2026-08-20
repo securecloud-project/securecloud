@@ -61,3 +61,43 @@ func TestListScans(t *testing.T) {
 		t.Fatalf("ListScans() returned %d scans, want 2", len(scans))
 	}
 }
+
+func TestScanStateTransitions(t *testing.T) {
+	testStore := newTestStore(t)
+	scan, err := testStore.CreateScan(context.Background(), "example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := testStore.MarkRunning(context.Background(), scan.ID); err != nil {
+		t.Fatalf("MarkRunning() error = %v", err)
+	}
+	findings := []Finding{{Check: "csp", Severity: "medium", Message: "missing"}}
+	if err := testStore.CompleteScan(context.Background(), scan.ID, 85, findings); err != nil {
+		t.Fatalf("CompleteScan() error = %v", err)
+	}
+	completed, err := testStore.GetScan(context.Background(), scan.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed.Status != StatusComplete || completed.Score != 85 || len(completed.Findings) != 1 {
+		t.Fatalf("completed scan = %+v", completed)
+	}
+	if err := testStore.MarkRunning(context.Background(), scan.ID); err == nil {
+		t.Fatal("invalid complete -> running transition succeeded")
+	}
+}
+
+func TestRequeueRunningScans(t *testing.T) {
+	testStore := newTestStore(t)
+	scan, _ := testStore.CreateScan(context.Background(), "example.com")
+	if err := testStore.MarkRunning(context.Background(), scan.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := testStore.RequeueRunning(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	ids, err := testStore.ListQueuedIDs(context.Background())
+	if err != nil || len(ids) != 1 || ids[0] != scan.ID {
+		t.Fatalf("ListQueuedIDs() = %v, %v", ids, err)
+	}
+}

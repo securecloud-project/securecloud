@@ -1,0 +1,6 @@
+.env
+data/
+*.db
+*_test.go
+.git
+
