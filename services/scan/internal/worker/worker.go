@@ -46,9 +46,10 @@ func (w *Worker) Start(ctx context.Context, count int) error {
 		go w.run(ctx)
 	}
 	for _, id := range pending {
-		if !w.Enqueue(id) {
-			w.logger.Warn("startup scan queue is full", "scan_id", id)
-			break
+		select {
+		case w.queue <- id:
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 	}
 	return nil

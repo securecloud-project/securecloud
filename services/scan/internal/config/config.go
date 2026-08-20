@@ -11,12 +11,16 @@ type Config struct {
 	Port                   int
 	DatabasePath           string
 	NotificationServiceURL string
+	AuthServiceURL         string
 	NetworkTimeout         time.Duration
+	AuthTimeout            time.Duration
 	ScanTimeout            time.Duration
 	NotificationTimeout    time.Duration
 	CertificateExpiry      time.Duration
 	WorkerCount            int
 	QueueDepth             int
+	RequestsPerSecond      int
+	RequestBurst           int
 }
 
 type lookupFunc func(string) (string, bool)
@@ -28,9 +32,12 @@ func Load(lookup lookupFunc) (Config, error) {
 		NetworkTimeout:         5 * time.Second,
 		ScanTimeout:            20 * time.Second,
 		NotificationTimeout:    3 * time.Second,
+		AuthTimeout:            3 * time.Second,
 		CertificateExpiry:      30 * 24 * time.Hour,
 		WorkerCount:            2,
 		QueueDepth:             64,
+		RequestsPerSecond:      20,
+		RequestBurst:           40,
 		NotificationServiceURL: "",
 	}
 	var err error
@@ -45,6 +52,12 @@ func Load(lookup lookupFunc) (Config, error) {
 			config.NotificationServiceURL = value
 			err = validateServiceURL(value)
 		}
+		if err == nil {
+			if value, ok := lookup("AUTH_SERVICE_URL"); ok {
+				config.AuthServiceURL = value
+				err = validateServiceURL(value)
+			}
+		}
 	}
 	for _, item := range []struct {
 		name string
@@ -53,6 +66,7 @@ func Load(lookup lookupFunc) (Config, error) {
 		{"SCAN_NETWORK_TIMEOUT", &config.NetworkTimeout},
 		{"SCAN_JOB_TIMEOUT", &config.ScanTimeout},
 		{"NOTIFICATION_TIMEOUT", &config.NotificationTimeout},
+		{"AUTH_TIMEOUT", &config.AuthTimeout},
 		{"CERT_EXPIRY_THRESHOLD", &config.CertificateExpiry},
 	} {
 		if err != nil {
@@ -70,6 +84,16 @@ func Load(lookup lookupFunc) (Config, error) {
 	if err == nil {
 		if value, ok := lookup("SCAN_QUEUE_DEPTH"); ok {
 			config.QueueDepth, err = parseInt("SCAN_QUEUE_DEPTH", value, 1, 10000)
+		}
+	}
+	if err == nil {
+		if value, ok := lookup("SCAN_REQUESTS_PER_SECOND"); ok {
+			config.RequestsPerSecond, err = parseInt("SCAN_REQUESTS_PER_SECOND", value, 1, 10000)
+		}
+	}
+	if err == nil {
+		if value, ok := lookup("SCAN_REQUEST_BURST"); ok {
+			config.RequestBurst, err = parseInt("SCAN_REQUEST_BURST", value, 1, 10000)
 		}
 	}
 	if err != nil {
@@ -103,7 +127,7 @@ func validateServiceURL(value string) error {
 	}
 	parsed, err := url.Parse(value)
 	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return fmt.Errorf("NOTIFICATION_SERVICE_URL must be an HTTP(S) origin without credentials, query, or fragment")
+		return fmt.Errorf("service URL must be an HTTP(S) origin without credentials, query, or fragment")
 	}
 	return nil
 }

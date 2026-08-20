@@ -37,4 +37,3 @@ until curl --fail --silent --show-error "http://127.0.0.1:$port/healthz" >/dev/n
 done
 
 echo "verified $image: non-root user=$user size=$size healthz=ok read-only-rootfs=ok"
-

@@ -3,11 +3,13 @@ package checks
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -31,6 +33,8 @@ type Suite struct {
 	httpClient      *http.Client
 	now             func() time.Time
 	expiryThreshold time.Duration
+	networkTimeout  time.Duration
+	rootCAs         *x509.CertPool
 }
 
 func NewSuite(timeout, expiryThreshold time.Duration) *Suite {
@@ -50,6 +54,7 @@ func NewSuite(timeout, expiryThreshold time.Duration) *Suite {
 		httpClient:      &http.Client{Transport: transport.Clone(), Timeout: timeout, CheckRedirect: noRedirect},
 		now:             time.Now,
 		expiryThreshold: expiryThreshold,
+		networkTimeout:  timeout,
 	}
 }
 
@@ -100,8 +105,12 @@ func (s *Suite) checkTLS(ctx context.Context, target string) (int, []store.Findi
 		return 0, []store.Finding{{Check: "tls", Severity: "high", Message: "TLS connection failed"}}, err
 	}
 	defer raw.Close()
-	connection := tls.Client(raw, &tls.Config{ServerName: target, MinVersion: tls.VersionTLS12})
-	if err := connection.HandshakeContext(ctx); err != nil {
+	// The certificate is verified explicitly below so expiry and not-yet-valid
+	// failures can be classified instead of being collapsed into a handshake error.
+	connection := tls.Client(raw, &tls.Config{ServerName: target, MinVersion: tls.VersionTLS12, InsecureSkipVerify: true}) // #nosec G402 -- x509.Verify follows immediately.
+	handshakeContext, cancel := context.WithTimeout(ctx, s.networkTimeout)
+	defer cancel()
+	if err := connection.HandshakeContext(handshakeContext); err != nil {
 		return 0, []store.Finding{{Check: "tls", Severity: "high", Message: "TLS certificate validation failed"}}, err
 	}
 	state := connection.ConnectionState()
@@ -110,13 +119,31 @@ func (s *Suite) checkTLS(ctx context.Context, target string) (int, []store.Findi
 	}
 	certificate := state.PeerCertificates[0]
 	now := s.now()
-	if now.Before(certificate.NotBefore) || !now.Before(certificate.NotAfter) {
-		return 0, []store.Finding{{Check: "tls", Severity: "high", Message: "TLS certificate is outside its validity period"}}, nil
+	points, findings, valid := certificateValidity(certificate, now, s.expiryThreshold)
+	if !valid {
+		return points, findings, nil
 	}
-	if certificate.NotAfter.Sub(now) <= s.expiryThreshold {
-		return tlsPoints, []store.Finding{{Check: "tls_expiry", Severity: "medium", Message: fmt.Sprintf("TLS certificate expires on %s", certificate.NotAfter.UTC().Format(time.RFC3339))}}, nil
+	intermediates := x509.NewCertPool()
+	for _, peer := range state.PeerCertificates[1:] {
+		intermediates.AddCert(peer)
 	}
-	return tlsPoints, nil, nil
+	if _, err := certificate.Verify(x509.VerifyOptions{DNSName: target, Roots: s.rootCAs, Intermediates: intermediates, CurrentTime: now}); err != nil {
+		return 0, []store.Finding{{Check: "tls", Severity: "high", Message: "TLS certificate chain or hostname validation failed"}}, err
+	}
+	return points, findings, nil
+}
+
+func certificateValidity(certificate *x509.Certificate, now time.Time, expiryThreshold time.Duration) (int, []store.Finding, bool) {
+	if now.Before(certificate.NotBefore) {
+		return 0, []store.Finding{{Check: "tls_validity", Severity: "high", Message: fmt.Sprintf("TLS certificate is not valid before %s", certificate.NotBefore.UTC().Format(time.RFC3339))}}, false
+	}
+	if !now.Before(certificate.NotAfter) {
+		return 0, []store.Finding{{Check: "tls_expiry", Severity: "high", Message: fmt.Sprintf("TLS certificate expired on %s", certificate.NotAfter.UTC().Format(time.RFC3339))}}, false
+	}
+	if certificate.NotAfter.Sub(now) <= expiryThreshold {
+		return tlsPoints - 10, []store.Finding{{Check: "tls_expiry", Severity: "medium", Message: fmt.Sprintf("TLS certificate expires on %s", certificate.NotAfter.UTC().Format(time.RFC3339))}}, true
+	}
+	return tlsPoints, nil, true
 }
 
 func (s *Suite) checkHeaders(ctx context.Context, target string) (int, []store.Finding, error) {
@@ -138,7 +165,7 @@ func (s *Suite) checkHeaders(ctx context.Context, target string) (int, []store.F
 	} else {
 		findings = append(findings, store.Finding{Check: "strict_transport_security", Severity: "medium", Message: "Strict-Transport-Security is missing or invalid"})
 	}
-	if strings.Contains(strings.ToLower(response.Header.Get("X-Content-Type-Options")), "nosniff") {
+	if validXContentTypeOptions(response.Header.Get("X-Content-Type-Options")) {
 		score += headerPoints
 	} else {
 		findings = append(findings, store.Finding{Check: "x_content_type_options", Severity: "medium", Message: "X-Content-Type-Options: nosniff is missing"})
@@ -154,7 +181,17 @@ func (s *Suite) checkHeaders(ctx context.Context, target string) (int, []store.F
 func validHSTS(value string) bool {
 	for _, directive := range strings.Split(strings.ToLower(value), ";") {
 		directive = strings.TrimSpace(directive)
-		if strings.HasPrefix(directive, "max-age=") && strings.TrimPrefix(directive, "max-age=") != "0" {
+		if strings.HasPrefix(directive, "max-age=") {
+			seconds, err := strconv.ParseUint(strings.TrimSpace(strings.TrimPrefix(directive, "max-age=")), 10, 64)
+			return err == nil && seconds > 0
+		}
+	}
+	return false
+}
+
+func validXContentTypeOptions(value string) bool {
+	for _, token := range strings.Split(value, ",") {
+		if strings.EqualFold(strings.TrimSpace(token), "nosniff") {
 			return true
 		}
 	}
@@ -173,10 +210,19 @@ func (s *Suite) checkRedirect(ctx context.Context, target string) (int, []store.
 	defer response.Body.Close()
 	_, _ = io.CopyN(io.Discard, response.Body, 4096)
 	location, locationErr := response.Location()
-	if response.StatusCode >= 300 && response.StatusCode < 400 && locationErr == nil && validHTTPSRedirect(location, target) {
+	if isRedirectStatus(response.StatusCode) && locationErr == nil && validHTTPSRedirect(location, target) {
 		return redirectPoints, nil, nil
 	}
 	return 0, []store.Finding{{Check: "https_redirect", Severity: "medium", Message: "HTTP does not redirect directly to HTTPS on the same host"}}, nil
+}
+
+func isRedirectStatus(status int) bool {
+	switch status {
+	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther, http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
+		return true
+	default:
+		return false
+	}
 }
 
 func validHTTPSRedirect(location *url.URL, target string) bool {

@@ -1,0 +1,21 @@
+apiVersion: openchoreo.dev/v1alpha1
+kind: Workload
+metadata:
+  name: notification-service-workload
+  namespace: default
+spec:
+  owner:
+    componentName: notification-service
+    projectName: securecloud
+  container:
+    image: ghcr.io/securecloud-project/securecloud-notification:v0.1.0
+    env:
+      - key: PORT
+        value: "8080"
+      - key: NOTIFICATION_DB_PATH
+        value: /data/notification.db
+  endpoints:
+    http:
+      type: HTTP
+      port: 8080
+      # Project visibility is implicit. Do not add external/internal/namespace.

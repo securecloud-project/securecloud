@@ -1,0 +1,12 @@
+apiVersion: openchoreo.dev/v1alpha1
+kind: Component
+metadata:
+  name: notification-service
+  namespace: default
+spec:
+  owner:
+    projectName: securecloud
+  autoDeploy: true
+  componentType:
+    kind: ClusterComponentType
+    name: deployment/service

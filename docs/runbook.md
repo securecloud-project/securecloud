@@ -10,15 +10,21 @@ Malformed values stop the process rather than silently weakening a check.
 | `PORT` | `8080` | HTTP listen port |
 | `SCAN_DB_PATH` | `./data/scan.db` | SQLite database file |
 | `NOTIFICATION_SERVICE_URL` | empty | Notification HTTP(S) origin; empty disables delivery |
+| `AUTH_SERVICE_URL` | empty | Auth verification origin; OpenChoreo deployment injects it |
 | `SCAN_NETWORK_TIMEOUT` | `5s` | Per-connection/request timeout |
 | `SCAN_JOB_TIMEOUT` | `20s` | Total budget for one queued scan |
 | `NOTIFICATION_TIMEOUT` | `3s` | Notification delivery timeout |
+| `AUTH_TIMEOUT` | `3s` | Bearer-token verification timeout |
 | `CERT_EXPIRY_THRESHOLD` | `720h` | Certificate-expiry warning window (30 days) |
 | `SCAN_WORKERS` | `2` | Fixed worker count, range 1–32 |
 | `SCAN_QUEUE_DEPTH` | `64` | In-memory queue capacity |
+| `SCAN_REQUESTS_PER_SECOND` | `20` | Global API token-refill rate |
+| `SCAN_REQUEST_BURST` | `40` | Maximum short API burst |
 
-There are no Scan Service secrets. `NOTIFICATION_SERVICE_URL` is supplied by
-the OpenChoreo endpoint dependency in deployed environments. Do not put tokens,
+There are no Scan Service secrets. `NOTIFICATION_SERVICE_URL` and
+`AUTH_SERVICE_URL` are supplied by OpenChoreo endpoint dependencies in deployed
+environments. The public Scan API verifies bearer tokens with Auth and applies
+a bounded global rate limit. Do not put tokens,
 credentials, or literal service DNS names in the workload. The database
 directory is mode `0700` and the database file is forced to `0600`.
 
@@ -67,4 +73,3 @@ To roll back, identify the last healthy `ComponentRelease` and update the
 environment's `ReleaseBinding` through the OpenChoreo portal or CLI. Confirm the
 binding, generated Deployment rollout, `/readyz`, and logs before closing the
 incident. Do not delete the SQLite volume during rollback.
-

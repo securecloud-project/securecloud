@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -9,9 +10,14 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"securecloud/scan/internal/store"
 )
+
+type fakeVerifier struct{ err error }
+
+func (v fakeVerifier) Verify(context.Context, string) error { return v.err }
 
 func newTestRouter(t *testing.T) http.Handler {
 	t.Helper()
@@ -105,5 +111,41 @@ func TestGetScanNotFound(t *testing.T) {
 	response := performRequest(newTestRouter(t), http.MethodGet, "/scan/does-not-exist", "")
 	if response.Code != http.StatusNotFound {
 		t.Fatalf("GET missing scan status = %d, want 404", response.Code)
+	}
+}
+
+func TestScanRoutesRequireValidBearerTokenWhenVerifierConfigured(t *testing.T) {
+	scanStore, err := store.New(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer scanStore.Close()
+	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	router := New(scanStore, logger, WithVerifier(fakeVerifier{})).Router()
+
+	missing := performRequest(router, http.MethodGet, "/scans", "")
+	if missing.Code != http.StatusUnauthorized {
+		t.Fatalf("missing bearer status = %d, want 401", missing.Code)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/scans", nil)
+	request.Header.Set("Authorization", "Bearer valid-token")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("verified bearer status = %d, want 200", response.Code)
+	}
+}
+
+func TestTokenBucketEnforcesBurst(t *testing.T) {
+	bucket := newTokenBucket(1, 2)
+	now := time.Now()
+	if !bucket.Allow(now) || !bucket.Allow(now) {
+		t.Fatal("initial burst was rejected")
+	}
+	if bucket.Allow(now) {
+		t.Fatal("request beyond burst was accepted")
+	}
+	if !bucket.Allow(now.Add(time.Second)) {
+		t.Fatal("refilled token was rejected")
 	}
 }

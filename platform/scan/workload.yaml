@@ -1,0 +1,52 @@
+apiVersion: openchoreo.dev/v1alpha1
+kind: Workload
+metadata:
+  name: scan-service-workload
+  namespace: default
+spec:
+  owner:
+    componentName: scan-service
+    projectName: securecloud
+  container:
+    image: ghcr.io/securecloud-project/securecloud-scan:v0.1.0
+    env:
+      - key: PORT
+        value: "8080"
+      - key: SCAN_DB_PATH
+        value: /data/scan.db
+      - key: SCAN_NETWORK_TIMEOUT
+        value: 5s
+      - key: SCAN_JOB_TIMEOUT
+        value: 20s
+      - key: NOTIFICATION_TIMEOUT
+        value: 3s
+      - key: AUTH_TIMEOUT
+        value: 3s
+      - key: CERT_EXPIRY_THRESHOLD
+        value: 720h
+      - key: SCAN_WORKERS
+        value: "2"
+      - key: SCAN_QUEUE_DEPTH
+        value: "64"
+      - key: SCAN_REQUESTS_PER_SECOND
+        value: "20"
+      - key: SCAN_REQUEST_BURST
+        value: "40"
+  endpoints:
+    http:
+      type: HTTP
+      port: 8080
+      visibility:
+        - external
+  dependencies:
+    endpoints:
+      - component: notification-service
+        name: http
+        visibility: project
+        envBindings:
+          address: NOTIFICATION_SERVICE_URL
+      - component: auth-service
+        name: http
+        visibility: project
+        envBindings:
+          address: AUTH_SERVICE_URL

@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"securecloud/scan/internal/auth"
 	"securecloud/scan/internal/checks"
 	"securecloud/scan/internal/config"
 	"securecloud/scan/internal/handler"
@@ -46,9 +47,16 @@ func main() {
 		logger.Error("failed to start scan workers", "error", err)
 		os.Exit(1)
 	}
+	handlerOptions := []handler.Option{
+		handler.WithSubmitter(scanWorker),
+		handler.WithRateLimit(settings.RequestsPerSecond, settings.RequestBurst),
+	}
+	if settings.AuthServiceURL != "" {
+		handlerOptions = append(handlerOptions, handler.WithVerifier(auth.New(settings.AuthServiceURL, settings.AuthTimeout)))
+	}
 	server := &http.Server{
 		Addr:              ":" + strconv.Itoa(settings.Port),
-		Handler:           handler.New(scanStore, logger, scanWorker).Router(),
+		Handler:           handler.New(scanStore, logger, handlerOptions...).Router(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      15 * time.Second,

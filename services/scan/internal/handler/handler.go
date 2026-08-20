@@ -1,12 +1,15 @@
 package handler
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -22,12 +25,32 @@ type Handler struct {
 	store     *store.Store
 	logger    *slog.Logger
 	submitter interface{ Enqueue(string) bool }
+	verifier  interface {
+		Verify(context.Context, string) error
+	}
+	limiter *tokenBucket
 }
 
-func New(scanStore *store.Store, logger *slog.Logger, submitter ...interface{ Enqueue(string) bool }) *Handler {
-	handler := &Handler{store: scanStore, logger: logger}
-	if len(submitter) > 0 {
-		handler.submitter = submitter[0]
+type Option func(*Handler)
+
+func WithSubmitter(submitter interface{ Enqueue(string) bool }) Option {
+	return func(handler *Handler) { handler.submitter = submitter }
+}
+
+func WithVerifier(verifier interface {
+	Verify(context.Context, string) error
+}) Option {
+	return func(handler *Handler) { handler.verifier = verifier }
+}
+
+func WithRateLimit(requestsPerSecond, burst int) Option {
+	return func(handler *Handler) { handler.limiter = newTokenBucket(float64(requestsPerSecond), float64(burst)) }
+}
+
+func New(scanStore *store.Store, logger *slog.Logger, options ...Option) *Handler {
+	handler := &Handler{store: scanStore, logger: logger, limiter: newTokenBucket(20, 40)}
+	for _, option := range options {
+		option(handler)
 	}
 	return handler
 }
@@ -39,10 +62,71 @@ func (h *Handler) Router() http.Handler {
 	router.Use(h.requestLogger)
 	router.Get("/healthz", h.healthz)
 	router.Get("/readyz", h.readyz)
-	router.Post("/scan", h.createScan)
-	router.Get("/scan/{id}", h.getScan)
-	router.Get("/scans", h.listScans)
+	router.Group(func(protected chi.Router) {
+		protected.Use(h.limitRequests)
+		protected.Use(h.requireAuthorization)
+		protected.Post("/scan", h.createScan)
+		protected.Get("/scan/{id}", h.getScan)
+		protected.Get("/scans", h.listScans)
+	})
 	return router
+}
+
+func (h *Handler) requireAuthorization(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if h.verifier == nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		authorization := r.Header.Get("Authorization")
+		if !strings.HasPrefix(authorization, "Bearer ") || strings.TrimSpace(strings.TrimPrefix(authorization, "Bearer ")) == "" {
+			writeError(w, http.StatusUnauthorized, "bearer token is required")
+			return
+		}
+		if err := h.verifier.Verify(r.Context(), authorization); err != nil {
+			writeError(w, http.StatusUnauthorized, "invalid or expired bearer token")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (h *Handler) limitRequests(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !h.limiter.Allow(time.Now()) {
+			w.Header().Set("Retry-After", "1")
+			writeError(w, http.StatusTooManyRequests, "request rate limit exceeded")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+type tokenBucket struct {
+	mu     sync.Mutex
+	rate   float64
+	burst  float64
+	tokens float64
+	last   time.Time
+}
+
+func newTokenBucket(rate, burst float64) *tokenBucket {
+	return &tokenBucket{rate: rate, burst: burst, tokens: burst, last: time.Now()}
+}
+
+func (b *tokenBucket) Allow(now time.Time) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.tokens += now.Sub(b.last).Seconds() * b.rate
+	if b.tokens > b.burst {
+		b.tokens = b.burst
+	}
+	b.last = now
+	if b.tokens < 1 {
+		return false
+	}
+	b.tokens--
+	return true
 }
 
 func (h *Handler) healthz(w http.ResponseWriter, _ *http.Request) {

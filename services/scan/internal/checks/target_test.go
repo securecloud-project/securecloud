@@ -22,6 +22,10 @@ func TestNormalizeTarget(t *testing.T) {
 		{input: "10.0.0.1", valid: false},
 		{input: "::1", valid: false},
 		{input: "2001:db8::1", valid: false},
+		{input: "64:ff9b::7f00:1", valid: false},
+		{input: "64:ff9b:1::a00:1", valid: false},
+		{input: "fec0::1", valid: false},
+		{input: "2002:7f00:1::", valid: false},
 		{input: "not_a_host.example", valid: false},
 	} {
 		got, err := NormalizeTarget(test.input)

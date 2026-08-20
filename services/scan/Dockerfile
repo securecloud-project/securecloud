@@ -18,4 +18,3 @@ ENV PORT=8080 \
     SCAN_DB_PATH=/data/scan.db
 EXPOSE 8080
 ENTRYPOINT ["/scan"]
-

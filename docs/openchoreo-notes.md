@@ -92,4 +92,3 @@ Notification endpoint needs no extra visibility entry: project visibility is
 implicit and narrower than `internal` or `external`. OpenChoreo can then inject
 the environment variable and permit the declared traffic without committing a
 DNS name. This is both portable configuration and an explicit security boundary.
-

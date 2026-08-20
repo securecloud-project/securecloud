@@ -7,7 +7,7 @@ func TestLoadDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.Port != 8080 || config.WorkerCount != 2 || config.QueueDepth != 64 {
+	if config.Port != 8080 || config.WorkerCount != 2 || config.QueueDepth != 64 || config.RequestsPerSecond != 20 {
 		t.Fatalf("unexpected defaults: %+v", config)
 	}
 }
@@ -20,6 +20,8 @@ func TestLoadRejectsUnsafeConfiguration(t *testing.T) {
 		{"SCAN_NETWORK_TIMEOUT": "10s", "SCAN_JOB_TIMEOUT": "5s"},
 		{"NOTIFICATION_SERVICE_URL": "file:///etc/passwd"},
 		{"NOTIFICATION_SERVICE_URL": "https://user:password@example.com"},
+		{"AUTH_SERVICE_URL": "file:///etc/passwd"},
+		{"SCAN_REQUEST_BURST": "0"},
 	} {
 		_, err := Load(func(key string) (string, bool) { value, ok := values[key]; return value, ok })
 		if err == nil {
